@@ -1129,7 +1129,7 @@ static void UciLoop() {
 }
 
 int main(const int argc, const char** argv) {
-	Init;
+	Init();
 	printf("%s %s\n", NAME, VERSION);
 	SetFen(&pos, START_FEN);
 	UciLoop();
