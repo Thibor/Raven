@@ -19,7 +19,7 @@ FIDE-rules-compliant chess engine
 ## Features
 
 - Single file
-- Board: piece[64]
+- Board: pieces[64]
 - En passant
 - Underpromotions (knight, bishop, rook)
 - Threefold repetition
