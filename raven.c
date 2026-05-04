@@ -19,10 +19,9 @@
 #define START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 #define FLIP(sq) ((sq)^56)
 
-enum Color { WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
+enum Color { EMPTY = 0, WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
 enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PT_NB };
 enum Piece {
-	EMPTY,
 	WHITE_PAWN = 8, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
 	BLACK_PAWN = 16, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
 };
@@ -93,6 +92,7 @@ int dirStart[PT_NB] = { 0,8,0,4,0,0 };
 int dirCount[PT_NB] = { 0,8,4,4,8,8 };
 int dirSlide[PT_NB] = { 0,0,1,1,1,0 };
 int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
+int insufVal[PT_NB] = { 3,1,2,3,3,0 };
 U64 keys[KEYS_COUNT];
 Stack stack[MAX_PLY];
 int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
@@ -321,6 +321,10 @@ static inline char CRankOf(int sq) {
 	return '1' + (7 - RankOf(sq));
 }
 
+static int PieceTypeOnSquare(const Position* pos, int sq) {
+	return GetPieceType(pos->board[sq]);
+}
+
 static int Distance(int sq1, int sq2) {
 	int x1 = FileOf(sq1);
 	int y1 = RankOf(sq1);
@@ -449,11 +453,13 @@ static int Permill() {
 static int EvalPosition(Position* pos, int* phaseW, int* phaseB) {
 	int scoreMg = 0;
 	int scoreEg = 0;
+	int insufficent[2]={0};
 	for (int sq = 0; sq < 64; ++sq) {
 		int piece = pos->board[sq];
 		if (piece != EMPTY) {
 			int pt = GetPieceType(piece);
 			int color = GetPieceColor(piece);
+			insufficent[color == BLACK] += insufVal[pt];
 			if (color == WHITE) {
 				*phaseW += phaseVal[pt];
 				scoreMg += mg_pst[pt][sq];
@@ -470,6 +476,8 @@ static int EvalPosition(Position* pos, int* phaseW, int* phaseB) {
 	if (phase > 24) phase = 24;
 	int score = (scoreMg * phase + scoreEg * (24 - phase)) / 24;
 	score = (score * (100 - pos->move50)) / 100;
+	if (insufficent[score < 0] < 3)
+		return 0;
 	return pos->color == WHITE ? score : -score;
 }
 
@@ -795,10 +803,10 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		if (!legalMoves || inCheck)
+		if (!legalMoves || inCheck || depth<4)
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
 		else {
-			int r = legalMoves >> 2;
+			int r = legalMoves / 13 + depth / 14;
 			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1, 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1, 1);
@@ -832,6 +840,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 }
 
 static void SearchIteratively(Position* pos) {
+	memset(tt, 0, sizeof(tt));
 	int score = 0;
 	int alpha = -MATE;
 	int beta = MATE;
@@ -1057,11 +1066,13 @@ static void ParsePosition(char* ptr) {
 	historyCount = 0;
 	if (strcmp(token, "moves") == 0)
 		while (1) {
-			historyHash[historyCount++] = GetHash(&pos);
 			ptr = ParseToken(ptr, token);
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token);
+			if (PieceTypeOnSquare(&pos, m.to) != PT_NB || PieceTypeOnSquare(&pos, m.from) == PAWN)
+				historyCount = 0;
+			historyHash[historyCount++] = GetHash(&pos);
 			MakeMove(&pos, &m);
 		}
 }
@@ -1123,6 +1134,8 @@ static void UciCommand(char* line) {
 }
 
 static void UciLoop() {
+	//UciCommand("position fen 8/3K2B1/8/6k1/7p/6P1/8/8 w - - 0 82");
+	//UciCommand("go movetime 1000");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
 		UciCommand(line);
