@@ -83,8 +83,12 @@ typedef struct {
 	U64 nodesLimit;
 }SearchInfo;
 
-SearchInfo info;
+typedef struct {
+	int phase[2];
+}EvalInfo;
 
+SearchInfo info;
+EvalInfo eval;
 int historyCount = 0;
 U64 historyHash[1024];
 D2 dirOffset[16] = { {1,1},{-1,1},{-1,-1},{1,-1},{1,0},{-1,0},{0,1},{0,-1},{1,2},{2,1},{-1,2},{-2,1},{-1,-2},{-2,-1},{1,-2},{2,-1} };
@@ -95,9 +99,9 @@ int phaseVal[PT_NB] = { 0,1,1,2,4,0 };
 int insufVal[PT_NB] = { 3,1,2,3,3,0 };
 U64 keys[KEYS_COUNT];
 Stack stack[MAX_PLY];
-int mg_value[6] = { 82, 337, 365, 477, 1025,  0 };
-int eg_value[6] = { 94, 281, 297, 512,  936,  0 };
-int max_value[6] = { 94, 337, 365, 477, 1025, 0 };
+int mg_material[6] = { 82, 337, 365, 477, 1025,  0 };
+int eg_material[6] = { 94, 281, 297, 512,  936,  0 };
+int mx_material[6] = { 94, 337, 365, 477, 1025, 0 };
 const U64 tt_count = 64ULL << 15;
 TTEntry tt[64ULL << 15];
 
@@ -262,9 +266,9 @@ int* eg_table[6] = {
 	eg_king_table
 };
 
-int mg_pst[12][64];
-int eg_pst[12][64];
-int max_pst[12][64];
+int mg_pst[16][64];
+int eg_pst[16][64];
+int mx_pst[16][64];
 
 static U64 Rand64() {
 	static U64 next = 1;
@@ -277,12 +281,14 @@ static void Init() {
 		keys[i] = Rand64();
 	for (int pt = PAWN; pt <= KING; pt++) {
 		for (int sq = 0; sq < 64; sq++) {
-			mg_pst[pt][sq] = mg_value[pt] + mg_table[pt][sq];
-			mg_pst[pt + PT_NB][sq] = mg_value[pt] + mg_table[pt][FLIP(sq)];
-			eg_pst[pt][sq] = eg_value[pt] + eg_table[pt][sq];
-			eg_pst[pt + PT_NB][sq] = eg_value[pt] + eg_table[pt][FLIP(sq)];
-			max_pst[pt][sq] = max(mg_pst[pt][sq], eg_pst[pt][sq]);
-			max_pst[pt + PT_NB][sq] = max(mg_pst[pt + PT_NB][sq], eg_pst[pt + PT_NB][sq]);
+			int mg = mg_material[pt] + mg_table[pt][sq];
+			int eg = eg_material[pt] + eg_table[pt][sq];
+			mg_pst[pt + WHITE][sq] = mg;
+			mg_pst[pt][FLIP(sq)] = -mg;
+			eg_pst[pt + WHITE][sq] = eg;
+			eg_pst[pt][FLIP(sq)] = -eg;
+			mx_pst[pt + WHITE][sq] = max(mg, eg);
+			mx_pst[pt][FLIP(sq)] = max(mg, eg);
 		}
 	}
 }
@@ -407,12 +413,10 @@ static U64 GetHash(const Position* pos) {
 }
 
 static int IsRepetition(Position* pos, U64 hash) {
-	for (int n = historyCount - 4; n >= historyCount - pos->move50; n -= 2) {
-		if (n < 0)
-			return FALSE;
+	int limit = max(0, historyCount - pos->move50);
+	for (int n = historyCount - 4; n >= limit; n -= 2)
 		if (historyHash[n] == hash)
 			return TRUE;
-	}
 	return FALSE;
 }
 
@@ -450,34 +454,27 @@ static int Permill() {
 	return pm;
 }
 
-static int EvalPosition(Position* pos, int* phaseW, int* phaseB) {
+static int EvalPosition(Position* pos) {
 	int scoreMg = 0;
 	int scoreEg = 0;
-	int insufficent[2]={0};
+	int insufficient[2] = { 0 };
+	eval.phase[0] = eval.phase[1] = 0;
 	for (int sq = 0; sq < 64; ++sq) {
 		int piece = pos->board[sq];
-		if (piece != EMPTY) {
-			int pt = GetPieceType(piece);
-			int color = GetPieceColor(piece);
-			insufficent[color == BLACK] += insufVal[pt];
-			if (color == WHITE) {
-				*phaseW += phaseVal[pt];
-				scoreMg += mg_pst[pt][sq];
-				scoreEg += eg_pst[pt][sq];
-			}
-			else {
-				*phaseB += phaseVal[pt];
-				scoreMg -= mg_pst[pt + PT_NB][sq];
-				scoreEg -= eg_pst[pt + PT_NB][sq];
-			}
-		}
+		if (piece == EMPTY)continue;
+		int pt = GetPieceType(piece);
+		int c = GetPieceColor(piece) == BLACK;
+		int pc = piece & 0xf;
+		insufficient[c] += insufVal[pt];
+		eval.phase[c] += phaseVal[pt];
+		scoreMg += mg_pst[pc][sq];
+		scoreEg += eg_pst[pc][sq];
 	}
-	int phase = *phaseW + *phaseB;
-	if (phase > 24) phase = 24;
+	if (max(insufficient[0], insufficient[1]) < 3)
+		return 0;
+	int phase = min(24, eval.phase[0] + eval.phase[1]);
 	int score = (scoreMg * phase + scoreEg * (24 - phase)) / 24;
 	score = (score * (100 - pos->move50)) / 100;
-	if (insufficent[score < 0] < 3)
-		return 0;
 	return pos->color == WHITE ? score : -score;
 }
 
@@ -667,6 +664,7 @@ static void PrintBoard(Position* pos) {
 	printf("side     : %16s\n", pos->color == WHITE ? "white" : "black");
 	printf("castling : %16s\n", castling);
 	printf("hash     : %16llx\n", GetHash(pos));
+	printf("score    : %16d\n", EvalPosition(pos));
 }
 
 static void PrintInfo(Position* pos, int depth, int score) {
@@ -697,25 +695,23 @@ static int EvalMove(Position* pos, Move* bst, Move* m) {
 	int pDes = pos->board[m->to];
 	int ptSou = GetPieceType(pSou);
 	int ptDes = GetPieceType(pDes);
-	int piece = pos->color == WHITE ? ptSou : ptSou + PT_NB;
-	int score = max_pst[piece][m->to] - max_pst[piece][m->from];
+	int pc = pSou & 0xf;
+	int score = mx_pst[pc][m->to] - mx_pst[pc][m->from];
 	if ((m->from == bst->from) && (m->to == bst->to))
 		score += 10000;
 	if (m->promo < PT_NB)
-		score += max_value[m->promo] - max_value[PAWN];
+		score += mx_material[m->promo] - mx_material[PAWN];
 	if (pDes)
-		score += 10 * max_value[ptDes] - max_value[ptSou];
+		score += mx_material[ptDes] - mx_material[ptSou] / 10;
 	return score;
 }
 
 static Move PickMove(Position* pos, Move* moveList, int* scoreList, int num_moves, int from) {
 	int bestIndex = from;
-	int bestScore = scoreList[from];
 	Move m = moveList[from];
 	for (int i = from + 1; i < num_moves; i++) {
-		if (bestScore < scoreList[i]) {
+		if (scoreList[bestIndex] < scoreList[i]) {
 			bestIndex = i;
-			bestScore = scoreList[i];
 			m = moveList[i];
 		}
 	}
@@ -734,29 +730,30 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		beta = mate_value - 1;
 	if (alpha >= beta)
 		return alpha;
-	int phaseW = 0, phaseB = 0;
-	int static_eval = EvalPosition(pos, &phaseW, &phaseB);
+	int staticEval = EvalPosition(pos);
 	if (ply >= MAX_PLY)
-		return static_eval;
-	stack[ply].score = static_eval;
+		return staticEval;
+	stack[ply].score = staticEval;
 	const int inCheck = IsSquareAttacked(pos, pos->kingSq[pos->color == BLACK], pos->color ^ COLOR_MASK);
 	if (inCheck)
 		depth = max(1, depth + 1);
 	int inQuiescence = depth < 1;
-	if (inQuiescence&& alpha < static_eval) {
-		alpha = static_eval;
+	if (inQuiescence && alpha < staticEval) {
+		alpha = staticEval;
 		if (alpha >= beta)
 			return beta;
 	}
 	const U64 hash = GetHash(pos);
-	if (ply && !inQuiescence)
-		if (pos->move50 >= 100 || IsRepetition(pos, hash))
+	if (ply && (pos->move50 > 99 || IsRepetition(pos, hash)))
 			return 0;
+	int inPv = beta - alpha > 1;
+
+	//TT Probing
 	TTEntry* tt_entry = tt + (hash % tt_count);
 	Move tt_move = { 0 };
 	if (tt_entry->hash == hash) {
 		tt_move = tt_entry->move;
-		if (alpha == beta - 1 && tt_entry->depth >= depth) {
+		if (!inPv && tt_entry->depth >= depth) {
 			if (tt_entry->flag == EXACT)return tt_entry->score;
 			if (tt_entry->flag == LOWER && tt_entry->score <= alpha)return tt_entry->score;
 			if (tt_entry->flag == UPPER && tt_entry->score >= beta)return tt_entry->score;
@@ -764,28 +761,27 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	}
 	else
 		depth -= depth > 3;
-	const int improving = ply > 1 && static_eval > stack[ply - 2].score;
+	const int improving = ply > 1 && staticEval > stack[ply - 2].score;
 	// If static_eval > tt_entry.score, tt_entry.flag cannot be Lower (ie must be Upper or Exact).
 	// Otherwise, tt_entry.flag cannot be Upper (ie must be Lower or Exact).
-	if (tt_entry->hash == hash && tt_entry->flag != (static_eval > tt_entry->score))
-		static_eval = tt_entry->score;
+	if (tt_entry->hash == hash && tt_entry->flag != (staticEval > tt_entry->score))
+		staticEval = tt_entry->score;
 
-	if (ply > 0 && !inQuiescence && !inCheck && alpha == beta - 1) {
+	if (ply && !inQuiescence && !inCheck && !inPv) {
 
 		// Reverse futility pruning
 		if (depth < 8) {
-			if (static_eval - 71 * (depth - improving) >= beta)
-				return static_eval;
-
-			inQuiescence = static_eval + 238 * depth < alpha;
+			if (staticEval - 71 * (depth - improving) >= beta)
+				return staticEval;
+			inQuiescence = staticEval + 238 * depth < alpha;
 		}
 
 		// Null move pruning
-		if (depth > 2 && static_eval >= beta && static_eval >= stack[ply].score && doNull && phaseW && phaseB) {
+		if (depth > 2 && staticEval >= beta && staticEval >= stack[ply].score && doNull && eval.phase[pos->color == BLACK]) {
 			Position npos = *pos;
 			npos.color ^= COLOR_MASK;
 			npos.ep = no_sq;
-			if (-SearchAlpha(&npos, -beta, -alpha, depth - 4 - depth / 5 - min((static_eval - beta) / 196, 3), ply + 1, 0) >= beta)
+			if (-SearchAlpha(&npos, -beta, -alpha, depth - 4 - depth / 5 - min((staticEval - beta) / 196, 3), ply + 1, 0) >= beta)
 				return beta;
 		}
 	}
@@ -803,10 +799,11 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		if (!legalMoves || inCheck || depth<4)
+		if (!legalMoves || inCheck || depth < 4)
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
 		else {
-			int r = legalMoves / 13 + depth / 14;
+			int r = (legalMoves * 2 + depth * 2 + (!inPv * 64)) / 64;
+			//int r = legalMoves / 13 + depth / 14;
 			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1, 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1, 1);
@@ -1134,8 +1131,9 @@ static void UciCommand(char* line) {
 }
 
 static void UciLoop() {
-	//UciCommand("position fen 8/3K2B1/8/6k1/7p/6P1/8/8 w - - 0 82");
+	//UciCommand("position fen rnbqkbnr/pppppppp/8/8/P7/8/1PPPPPPP/RNBQKBNR b KQkq - 0 1");
 	//UciCommand("go movetime 1000");
+	//UciCommand("print");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
 		UciCommand(line);
