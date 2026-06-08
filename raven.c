@@ -765,18 +765,15 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	if (ply && !inQuiescence && !inCheck && !inPv) {
 
 		// Reverse futility pruning
-		if (depth < 8) {
-			if (staticEval - 71 * (depth - improving) >= beta)
+		if (depth < 8 && staticEval - 71 * (depth - improving) >= beta)
 				return staticEval;
-			inQuiescence = staticEval + 238 * depth < alpha;
-		}
 
 		// Null move pruning
-		if (depth > 2 && staticEval >= beta && staticEval >= stack[ply].score && doNull && eval.phase[pos->color == BLACK]) {
+		if (depth > 2 && staticEval >= beta && doNull && eval.phase[0] && eval.phase[1]) {
 			Position npos = *pos;
 			npos.color ^= COLOR_MASK;
 			npos.ep = no_sq;
-			if (-SearchAlpha(&npos, -beta, -alpha, depth - 4 - depth / 5 - min((staticEval - beta) / 196, 3), ply + 1, 0) >= beta)
+			if (-SearchAlpha(&npos, -beta, -alpha, depth - 4 - depth / 4, ply + 1, 0) >= beta)
 				return beta;
 		}
 	}
@@ -794,7 +791,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
-		if (!legalMoves || inCheck || depth < 4)
+		if (!legalMoves || depth < 4 )
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
 		else {
 			int r = !inPv;
@@ -937,7 +934,7 @@ static int MakeMove(Position* pos, const Move* move) {
 	int pt = GetPieceType(piece);
 	if (pt == PAWN) {
 		if (move->to == ep)
-			pos->board[move->to + pos->color == WHITE ? 8 : -8] = EMPTY;
+			pos->board[move->to + (pos->color == WHITE ? 8 : -8)] = EMPTY;
 		if (abs(move->from - move->to) == 16)
 			pos->ep = (move->from + move->to) / 2;
 		pos->move50 = 0;
@@ -1128,6 +1125,8 @@ static void UciLoop() {
 }
 
 int main(const int argc, const char** argv) {
+	UciCommand("position startpos moves e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4e5 c7c5 a2a3 b4c3 b2c3 d8c7 g1f3 g8e7 f1e2 b8c6 d4c5 c6e5 f3e5 c7e5 d1d4 e5e4 d4e4 d5e4 f2f3 f7f5 a1b1 e7d5 c3c4 d5c3 b1b3 c3e2 e1e2 e4f3 g2f3 e8f7 c1b2 h7h5 h1d1 h5h4 e2f2 a7a5 a3a4 h4h3 d1g1 h8h7 f3f4 a8a6 b2d4 g7g6 f2g3 h7h5 g1d1 g6g5 d4e5 g5f4 e5f4 f7f6 d1e1 f6g7 b3b5 g7g6 c2c3 h5h7 f4e5 a6a7 b5b6 a7a8 e1g1 g6f7 b6d6 f7e7 g1d1 h7h5 d6d8 e7f7 d1g1 h5g5 g3f2 g5g1 f2g1 f7e7 d8h8 e7d7 h8h7 d7d8 e5c7 d8e8 c7b6 e6e5 h7h3 e8f7 h3h8 e5e4 b6c7 f7g7 h8d8 g7f6 g1f2 f6g7 h2h4 g7f6 c7f4 f6g6 f2g3 g6f6 h4h5 e4e3 f4e3 f6g7 h5h6 g7h7 g3h4 b7b5 c5b6 f5f4 e3f4 c8b7 d8d7 h7g6 d7b7 a8f8 b7g7 g6f5 h4g3");
+	UciCommand("print");
 	Init();
 	printf("%s %s\n", NAME, VERSION);
 	SetFen(&pos, START_FEN);
