@@ -22,8 +22,8 @@
 enum Color { EMPTY = 0, WHITE = 8, BLACK = 16, COLOR_MASK = WHITE | BLACK };
 enum PieceType { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, PT_NB };
 enum Piece {
-	WHITE_PAWN = 8, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
-	BLACK_PAWN = 16, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
+	WHITE_PAWN = WHITE, WHITE_KNIGHT, WHITE_BISHOP, WHITE_ROOK, WHITE_QUEEN, WHITE_KING,
+	BLACK_PAWN = BLACK, BLACK_KNIGHT, BLACK_BISHOP, BLACK_ROOK, BLACK_QUEEN, BLACK_KING
 };
 enum Castling { CWK = 1, CWQ = 2, CBK = 4, CBQ = 8 };
 enum Bound { LOWER, UPPER, EXACT };
@@ -306,9 +306,7 @@ static inline int GetPieceColor(int piece) {
 }
 
 static inline int GetPieceType(int piece) {
-	if (piece == EMPTY)
-		return PT_NB;
-	return piece & 7;
+	return piece == EMPTY ? PT_NB : piece & 7;
 }
 
 static inline int FileOf(int sq) {
@@ -327,7 +325,7 @@ static inline char CRankOf(int sq) {
 	return '1' + (7 - RankOf(sq));
 }
 
-static int PieceTypeOnSquare(const Position* pos, int sq) {
+static inline int PieceTypeOnSquare(const Position* pos, int sq) {
 	return GetPieceType(pos->board[sq]);
 }
 
@@ -472,7 +470,7 @@ static int EvalPosition(Position* pos) {
 	}
 	if (max(insufficient[0], insufficient[1]) < 3)
 		return 0;
-	int phase = min(24, eval.phase[0] + eval.phase[1]);
+	int phase = min(24, eval.phase[0] + eval.phase[1]); 
 	int score = (scoreMg * phase + scoreEg * (24 - phase)) / 24;
 	score = (score * (100 - pos->move50)) / 100;
 	return pos->color == WHITE ? score : -score;
@@ -708,13 +706,10 @@ static int EvalMove(Position* pos, Move* bst, Move* m) {
 
 static Move PickMove(Position* pos, Move* moveList, int* scoreList, int num_moves, int from) {
 	int bestIndex = from;
-	Move m = moveList[from];
-	for (int i = from + 1; i < num_moves; i++) {
-		if (scoreList[bestIndex] < scoreList[i]) {
+	for (int i = from + 1; i < num_moves; i++)
+		if (scoreList[bestIndex] < scoreList[i])
 			bestIndex = i;
-			m = moveList[i];
-		}
-	}
+	Move m = moveList[bestIndex];
 	moveList[bestIndex] = moveList[from];
 	scoreList[bestIndex] = scoreList[from];
 	return m;
@@ -745,7 +740,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	}
 	const U64 hash = GetHash(pos);
 	if (ply && (pos->move50 > 99 || IsRepetition(pos, hash)))
-			return 0;
+		return 0;
 	int inPv = beta - alpha > 1;
 
 	//TT Probing
@@ -802,8 +797,7 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 		if (!legalMoves || inCheck || depth < 4)
 			score = -SearchAlpha(&npos, -beta, -alpha, depth - 1, ply + 1, 1);
 		else {
-			int r = (legalMoves * 2 + depth * 2 + (!inPv * 64)) / 64;
-			//int r = legalMoves / 13 + depth / 14;
+			int r = !inPv;
 			score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1 - r, ply + 1, 1);
 			if (r && score > alpha)
 				score = -SearchAlpha(&npos, -alpha - 1, -alpha, depth - 1, ply + 1, 1);
@@ -842,20 +836,20 @@ static void SearchIteratively(Position* pos) {
 	int alpha = -MATE;
 	int beta = MATE;
 	for (int depth = 1; depth <= info.depthLimit; ++depth) {
-		int asphigh = 16, asplow = 16;
+		int aspH = 16, aspL = 16;
 		do {
 			if (depth > 4) {
-				alpha = score - asplow;
-				beta = score + asphigh;
+				alpha = score - aspL;
+				beta = score + aspH;
 			}
 			score = SearchAlpha(pos, alpha, beta, depth, 0, 0);
 			if (score <= alpha) {
-				alpha -= asplow;
-				asplow *= 2;
+				alpha -= aspL;
+				aspL *= 2;
 			}
 			else if (score >= beta) {
-				beta += asphigh;
-				asphigh *= 2;
+				beta += aspH;
+				aspH *= 2;
 			}
 			else
 				break;
@@ -943,10 +937,7 @@ static int MakeMove(Position* pos, const Move* move) {
 	int pt = GetPieceType(piece);
 	if (pt == PAWN) {
 		if (move->to == ep)
-			if (pos->color == WHITE)
-				pos->board[move->to + 8] = EMPTY;
-			else
-				pos->board[move->to - 8] = EMPTY;
+			pos->board[move->to + pos->color == WHITE ? 8 : -8] = EMPTY;
 		if (abs(move->from - move->to) == 16)
 			pos->ep = (move->from + move->to) / 2;
 		pos->move50 = 0;
@@ -1013,7 +1004,7 @@ static inline void PerftDriver(Position* pos, int depth) {
 }
 
 //performance test
-static inline void UciPerformance(Position* pos) {
+static void UciPerformance(Position* pos) {
 	ResetInfo();
 	PrintPerformanceHeader();
 	info.depthLimit = 0;
@@ -1131,9 +1122,6 @@ static void UciCommand(char* line) {
 }
 
 static void UciLoop() {
-	//UciCommand("position fen rnbqkbnr/pppppppp/8/8/P7/8/1PPPPPPP/RNBQKBNR b KQkq - 0 1");
-	//UciCommand("go movetime 1000");
-	//UciCommand("print");
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
 		UciCommand(line);
