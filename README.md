@@ -19,6 +19,7 @@ FIDE-rules-compliant chess engine
 ## Features
 
 - Single file
+- Protocol UCI
 - Board: pieces[64]
 - En passant
 - Underpromotions (knight, bishop, rook)
