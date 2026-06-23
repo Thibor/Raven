@@ -1,7 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>  
+#include <math.h>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
 
 #define MATE 32000
 #define MAX_PLY 64
@@ -51,8 +56,6 @@ typedef struct {
 	U8 castle;
 	U8 move50;
 }Position;
-
-Position pos;
 
 typedef struct {
 	U8 from;
@@ -270,6 +273,8 @@ int mg_pst[16][64];
 int eg_pst[16][64];
 int mx_pst[16][64];
 
+void UciCommand(Position* pos, char* line);
+
 static U64 Rand64() {
 	static U64 next = 1;
 	next = next * 12345104729 + 104723;
@@ -294,7 +299,7 @@ static void Init() {
 }
 
 static inline U64 GetTimeMs() {
-	return (U64)GetTickCount64();
+	return GetTickCount64();
 }
 
 static inline int MakePiece(int color, int pt) {
@@ -337,12 +342,41 @@ static int Distance(int sq1, int sq2) {
 	return max(abs(x1 - x2), abs(y1 - y2));
 }
 
-static int CheckUp() {
+static int InputAvailable(void) {
+	static int init = 0, pipe;
+	static HANDLE inh;
+	DWORD dw;
+	if (!init) {
+		init = 1;
+		inh = GetStdHandle(STD_INPUT_HANDLE);
+		pipe = !GetConsoleMode(inh, &dw);
+		if (!pipe) {
+			SetConsoleMode(inh, dw & ~(ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT));
+			FlushConsoleInputBuffer(inh);
+		}
+	}
+	if (pipe) {
+		if (!PeekNamedPipe(inh, NULL, 0, NULL, &dw, NULL))
+			return 1;
+		return dw > 0;
+	}
+	else {
+		GetNumberOfConsoleInputEvents(inh, &dw);
+		return dw > 1;
+	}
+}
+
+static int CheckUp(Position* pos) {
 	if ((++info.nodes & 0xffff) == 0) {
 		if (info.timeLimit && GetTimeMs() - info.timeStart > info.timeLimit)
-			info.stop = 1;
+			info.stop = TRUE;
 		if (info.nodesLimit && info.nodes > info.nodesLimit)
-			info.stop = 1;
+			info.stop = TRUE;
+		if (InputAvailable()) {
+			char line[4000];
+			fgets(line, sizeof(line), stdin);
+			UciCommand(pos, line);
+		}
 	}
 	return info.stop;
 }
@@ -716,7 +750,7 @@ static Move PickMove(Position* pos, Move* moveList, int* scoreList, int num_move
 }
 
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, int doNull) {
-	if (CheckUp())
+	if (CheckUp(pos))
 		return 0;
 	int  mate_value = MATE - ply;
 	if (alpha < -mate_value)
@@ -1030,7 +1064,7 @@ static void UciBench(Position* pos) {
 	PrintSummary(elapsed, info.nodes);
 }
 
-static void ParsePosition(char* ptr) {
+static void ParsePosition(Position* pos, char* ptr) {
 	char token[80], fen[80];
 	ptr = ParseToken(ptr, token);
 	if (strcmp(token, "fen") == 0) {
@@ -1042,11 +1076,11 @@ static void ParsePosition(char* ptr) {
 			strcat(fen, token);
 			strcat(fen, " ");
 		}
-		SetFen(&pos, fen);
+		SetFen(pos, fen);
 	}
 	else {
 		ptr = ParseToken(ptr, token);
-		SetFen(&pos, START_FEN);
+		SetFen(pos, START_FEN);
 	}
 	historyCount = 0;
 	if (strcmp(token, "moves") == 0)
@@ -1055,14 +1089,14 @@ static void ParsePosition(char* ptr) {
 			if (*token == '\0')
 				break;
 			Move m = UciToMove(token);
-			if (PieceTypeOnSquare(&pos, m.to) != PT_NB || PieceTypeOnSquare(&pos, m.from) == PAWN)
+			if (PieceTypeOnSquare(pos, m.to) != PT_NB || PieceTypeOnSquare(pos, m.from) == PAWN)
 				historyCount = 0;
-			historyHash[historyCount++] = GetHash(&pos);
-			MakeMove(&pos, &m);
+			historyHash[historyCount++] = GetHash(pos);
+			MakeMove(pos, &m);
 		}
 }
 
-static void ParseGo(char* command) {
+static void ParseGo(Position* pos, char* command) {
 	ResetInfo();
 	int wtime = 0;
 	int btime = 0;
@@ -1086,14 +1120,14 @@ static void ParseGo(char* command) {
 		info.depthLimit = atoi(argument + 6);
 	if (argument = strstr(command, "nodes"))
 		info.nodesLimit = atoi(argument + 5);
-	int time = pos.color == WHITE ? wtime : btime;
-	int inc = pos.color == WHITE ? winc : binc;
+	int time = pos->color == WHITE ? wtime : btime;
+	int inc = pos->color == WHITE ? winc : binc;
 	if (time)
 		info.timeLimit = max(1, min(time / movestogo + inc, time / 2));
-	SearchIteratively(&pos);
+	SearchIteratively(pos);
 }
 
-static void UciCommand(char* line) {
+void UciCommand(Position* pos,char* line) {
 	if (strncmp(line, "ucinewgame", 10) == 0)
 		memset(tt, 0, sizeof(tt));
 	else if (!strncmp(line, "uci", 3)) {
@@ -1105,30 +1139,31 @@ static void UciCommand(char* line) {
 		fflush(stdout);
 	}
 	else if (!strncmp(line, "go", 2))
-		ParseGo(line + 2);
+		ParseGo(pos,line + 2);
 	else if (!strncmp(line, "position", 8))
-		ParsePosition(line + 8);
+		ParsePosition(pos,line + 8);
 	else if (!strncmp(line, "print", 5))
-		PrintBoard(&pos);
+		PrintBoard(pos);
 	else if (!strncmp(line, "perft", 5))
-		UciPerformance(&pos);
+		UciPerformance(pos);
 	else if (!strncmp(line, "bench", 5))
-		UciBench(&pos);
-	else if (!strncmp(line, "exit", 4))
+		UciBench(pos);
+	else if (!strncmp(line, "stop", 4))
+		info.stop = TRUE;
+	else if (!strncmp(line, "quit", 4))
 		exit(0);
 }
 
-static void UciLoop() {
+static void UciLoop(Position* pos) {
 	char line[4000];
 	while (fgets(line, sizeof(line), stdin))
-		UciCommand(line);
+		UciCommand(pos,line);
 }
 
 int main(const int argc, const char** argv) {
-	//UciCommand("position startpos moves e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4e5 c7c5 a2a3 b4c3 b2c3 d8c7 g1f3 g8e7 f1e2 b8c6 d4c5 c6e5 f3e5 c7e5 d1d4 e5e4 d4e4 d5e4 f2f3 f7f5 a1b1 e7d5 c3c4 d5c3 b1b3 c3e2 e1e2 e4f3 g2f3 e8f7 c1b2 h7h5 h1d1 h5h4 e2f2 a7a5 a3a4 h4h3 d1g1 h8h7 f3f4 a8a6 b2d4 g7g6 f2g3 h7h5 g1d1 g6g5 d4e5 g5f4 e5f4 f7f6 d1e1 f6g7 b3b5 g7g6 c2c3 h5h7 f4e5 a6a7 b5b6 a7a8 e1g1 g6f7 b6d6 f7e7 g1d1 h7h5 d6d8 e7f7 d1g1 h5g5 g3f2 g5g1 f2g1 f7e7 d8h8 e7d7 h8h7 d7d8 e5c7 d8e8 c7b6 e6e5 h7h3 e8f7 h3h8 e5e4 b6c7 f7g7 h8d8 g7f6 g1f2 f6g7 h2h4 g7f6 c7f4 f6g6 f2g3 g6f6 h4h5 e4e3 f4e3 f6g7 h5h6 g7h7 g3h4 b7b5 c5b6 f5f4 e3f4 c8b7 d8d7 h7g6 d7b7 a8f8 b7g7 g6f5 h4g3");
-	//UciCommand("print");
+	Position pos;
 	Init();
 	printf("%s %s\n", NAME, VERSION);
 	SetFen(&pos, START_FEN);
-	UciLoop();
+	UciLoop(&pos);
 }
