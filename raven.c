@@ -66,6 +66,8 @@ typedef struct {
 typedef struct {
 	S16 score;
 	Move move;
+	Move killer1;
+	Move killer2;
 } Stack;
 
 typedef struct {
@@ -274,6 +276,8 @@ int eg_pst[16][64];
 int mx_pst[16][64];
 
 void UciCommand(Position* pos, char* line);
+
+static inline int Equal(const Move lhs, const Move rhs) {return !memcmp(&rhs, &lhs, sizeof(Move));}
 
 static U64 Rand64() {
 	static U64 next = 1;
@@ -722,6 +726,17 @@ static int CenterSq(int sq) {
 	return Center(rank, file);
 }
 
+static Move PickMove(Position* pos, Move* moveList, int* scoreList, int num_moves, int from) {
+	int bestIndex = from;
+	for (int i = from + 1; i < num_moves; i++)
+		if (scoreList[bestIndex] < scoreList[i])
+			bestIndex = i;
+	Move m = moveList[bestIndex];
+	moveList[bestIndex] = moveList[from];
+	scoreList[bestIndex] = scoreList[from];
+	return m;
+}
+
 static int EvalMove(Position* pos, Move* bst, Move* m) {
 	int pSou = pos->board[m->from];
 	int pDes = pos->board[m->to];
@@ -736,17 +751,6 @@ static int EvalMove(Position* pos, Move* bst, Move* m) {
 	if (pDes)
 		score += mx_material[ptDes] - mx_material[ptSou] / 10;
 	return score;
-}
-
-static Move PickMove(Position* pos, Move* moveList, int* scoreList, int num_moves, int from) {
-	int bestIndex = from;
-	for (int i = from + 1; i < num_moves; i++)
-		if (scoreList[bestIndex] < scoreList[i])
-			bestIndex = i;
-	Move m = moveList[bestIndex];
-	moveList[bestIndex] = moveList[from];
-	scoreList[bestIndex] = scoreList[from];
-	return m;
 }
 
 static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, int doNull) {
@@ -816,12 +820,32 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 	int legalMoves = 0;
 	int score;
 	Move moves[256];
-	int scoreList[256];
+	S64 scoreList[256];
 	const int num_moves = MoveGen(pos, moves, inQuiescence, inCheck);
-	for (int n = 0; n < num_moves; n++)
-		scoreList[n] = EvalMove(pos, &tt_move, &moves[n]);
+	for (int j = 0; j < num_moves; ++j) {
+		Move m = moves[j];
+		const int ptDes = PieceTypeOnSquare(pos, m.to);
+		if (Equal(m, tt_move))
+			scoreList[j] = 1LL << 62;
+		else if (ptDes != PT_NB)
+			scoreList[j] = ((ptDes + 1) * (1LL << 54)) - PieceTypeOnSquare(pos, m.from);
+		else if (Equal(m, stack[ply].killer1))
+			scoreList[j] = 1LL << 50;
+		else if (Equal(m, stack[ply].killer2))
+			scoreList[j] = 1LL << 48;
+		else {
+			int pc = pos->board[m.from] & 0xf;
+			scoreList[j] = mx_pst[pc][m.to] - mx_pst[pc][m.from];
+		}
+	}
 	for (int n = 0; n < num_moves; n++) {
-		Move move = PickMove(pos, moves, scoreList, num_moves, n);
+		int bstIdx = n;
+		for (int j = n + 1; j < num_moves; ++j)
+			if (scoreList[bstIdx] < scoreList[j])
+				bstIdx = j;
+		Move move = moves[bstIdx];
+		scoreList[bstIdx] = scoreList[n];
+		moves[bstIdx] = moves[n];
 		Position npos = *pos;
 		if (!MakeMove(&npos, &move))
 			continue;
@@ -846,6 +870,10 @@ static int SearchAlpha(Position* pos, int alpha, int beta, int depth, int ply, i
 				PrintInfo(pos, depth, score);
 			if (alpha >= beta) {
 				tt_flag = UPPER;
+				if (move.promo == PT_NB && PieceTypeOnSquare(pos, move.to) == PT_NB && !Equal(move, stack[ply].killer1)) {
+					stack[ply].killer2 = stack[ply].killer1;
+					stack[ply].killer1 = move;
+				}
 				break;
 			}
 		}
